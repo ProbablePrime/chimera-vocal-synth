@@ -17,6 +17,12 @@
  * notes, the last vowel holds over the rest (with a warning); when it finds more ("ba" is
  * "B.A."), the part is refused: respell the word (`spell`, "ba" → "bah"). A melisma inside a word
  * moves to the word's end unless every piece is one syllable on its own (also warned).
+ * When every piece is one syllable on its own and the joined word doesn't fit or isn't in the
+ * dictionary (a vocable, "Ahh-ohh-ooo"), the pieces are sung as words.
+ *
+ * Exports in the wild: a letter typed three times or more is read twice ("ooo" is "oo"), a lyric
+ * that is only a dash is a hold, a typed trailing hyphen ("A -", "ny") splits a word as
+ * `<syllabic>` would (unless the next piece is capitalized), and U+FFFD is a lost apostrophe.
  *
  * The melody's bpm is the score's first `<sound tempo>`; later tempo changes are built into the
  * note lengths (a beat at half the tempo is two beats long). A given bpm sings it all at one tempo.
@@ -157,15 +163,19 @@ export function lowClef(xml: string, partId: string): boolean {
   return [...partBody(xml, partId).matchAll(/<clef\b[^>]*>([\s\S]*?)<\/clef>/g)].some(([, c]) => tag(c, "sign") === "F" || tag(c, "clef-octave-change") === "-1");
 }
 
-let dictionary: Promise<(w: string) => number> | null = null;
-/** syllables per word by the engine's dictionary, as `render notes` uses it */
-function syllableCounter(): Promise<(w: string) => number> {
+type Dictionary = { count: (w: string) => number; known: (w: string) => boolean };
+let dictionary: Promise<Dictionary> | null = null;
+/** syllables per word by the engine's dictionary, as `render notes` uses it, and whether a word is in it */
+function loadDictionary(): Promise<Dictionary> {
   dictionary ??= (async () => {
     // engine.ts calls the wasm when it loads, so it is imported only after initChimera
     await initChimera(readFileSync(new URL("../../src/wasm/chimera.wasm", import.meta.url)));
     const { EnglishG2P, lyricsToSyllables } = await import("../../src/wasm/engine.ts");
-    new EnglishG2P().setDictionaryText(gunzipSync(readFileSync(new URL("../../public/data/cmudict.txt.gz", import.meta.url))).toString());
-    return (w: string) => lyricsToSyllables(w).length;
+    const text = gunzipSync(readFileSync(new URL("../../public/data/cmudict.txt.gz", import.meta.url))).toString();
+    new EnglishG2P().setDictionaryText(text);
+    // "word\tPHONES", alternates as "word(2)\t..."
+    const words = new Set(text.split("\n").map((l) => l.split(/[\t(]/)[0].toLowerCase()));
+    return { count: (w: string) => lyricsToSyllables(w).length, known: (w: string) => words.has(w.toLowerCase()) };
   })();
   return dictionary;
 }
@@ -352,29 +362,44 @@ export async function convertPart(xml: string, partId: string, opts: { bpm?: num
     if (s.syllabic === "single" || s.syllabic === "end") open = null;
   }
 
-  const count = await syllableCounter();
+  const { count, known } = await loadDictionary();
   const tokens: string[] = [];
   // messages grouped by word: "word: what" → measures
   const errors = new Map<string, string[]>();
   const warned = new Map<string, string[]>();
   const note = (to: Map<string, string[]>, key: string, measure: string) => to.set(key, [...(to.get(key) ?? []), measure]);
+  // letters and apostrophes only (U+FFFD: an apostrophe lost to a bad encoding on export,
+  // "doesn�t"), and a letter typed three or more times twice: the dictionary doesn't know
+  // "ooo" and its rules make it two syllables, but "oo" is one (no English word has a triple letter)
+  const clean = (s: string) =>
+    s
+      .replace(/[’‘ʼ�]/g, "'")
+      .replace(/[^A-Za-z']/g, "")
+      .replace(/([a-z])\1{2,}/gi, (run) => run.slice(0, 2));
+  const respell = (s: string) => spell.get(s.toLowerCase()) ?? s;
   for (const w of words) {
-    // U+FFFD: an apostrophe lost to a bad encoding on export ("doesn�t")
-    const joined = w.pieces.join("").replace(/[’‘ʼ�]/g, "'").replace(/[^A-Za-z']/g, "");
+    const joined = clean(w.pieces.join(""));
     if (!joined) throw new Error(`measure ${w.measure}: the lyric "${w.pieces.join("-")}" has no letters`);
-    const word = spell.get(joined.toLowerCase()) ?? joined;
+    const word = respell(joined);
     const k = w.pieces.length;
     const n = count(word);
     const inner = w.holds.slice(0, -1).some((h) => h > 0);
-    if (n > k || n === 0) {
-      // one entry per word whatever its case: spellings match without case too
-      note(errors, `"${word.toLowerCase()}": ${n} syllable(s) on ${k} note(s)`, w.measure);
+    // each piece says itself ("Ahh-ohh-oo", "Doh-oo"): sing the pieces as words, each melisma
+    // where it is (a melisma mark needs spaces round it, so a typed hyphen can't join the pieces
+    // across it). Done when the word is held inside, when joined it doesn't fit its notes, or when
+    // it isn't in the dictionary: the rules read a joined vocable's silent h's as consonants
+    // ("ahhohhoo" is "æ-hɑ-hu"), and the score's own split is better than a guess. A word the
+    // user respelled is sung as respelled.
+    const pieces = w.pieces.map((p) => respell(clean(p)));
+    const fits = n > 0 && n <= k;
+    const unknown = !known(word) && !spell.has(joined.toLowerCase());
+    if (k > 1 && (!fits || unknown || (inner && n === k)) && pieces.every((p) => p && count(p) === 1)) {
+      pieces.forEach((p, i) => tokens.push(` ${p}`, ...Array.from({ length: w.holds[i] }, () => " -")));
       continue;
     }
-    if (inner && n === k && w.pieces.every((p) => count(spell.get(p.toLowerCase()) ?? p) === 1)) {
-      // each piece says itself: sing the pieces as words, each melisma where it is (a melisma
-      // mark needs spaces round it, so a typed hyphen can't join the pieces across it)
-      w.pieces.forEach((p, i) => tokens.push(` ${spell.get(p.toLowerCase()) ?? p}`, ...Array.from({ length: w.holds[i] }, () => " -")));
+    if (!fits) {
+      // one entry per word whatever its case: spellings match without case too
+      note(errors, `"${word.toLowerCase()}": ${n} syllable(s) on ${k} note(s)`, w.measure);
       continue;
     }
     if (inner) note(warned, `"${word.toLowerCase()}" is held at its end, not between its syllables`, w.measure);

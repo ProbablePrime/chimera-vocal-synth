@@ -68,6 +68,23 @@ describe("musicxml-to-notes", () => {
     expect(JSON.parse(r.out).lyrics).toBe("Any doesn't see I'm ooh -");
   });
 
+  test("a tripled letter is read as two, and a glide of one-syllable pieces is sung piece by piece", () => {
+    // as all-i-want-for-christmas-is-you-mariah-carey-ttbb-a-cappella-choir.mxl writes them:
+    // "Ooo" alone was two syllables, and "Ahh-ohh-ooo" joined was four on three notes
+    const r = run(
+      score([
+        note("C", 1, [["single", "Ooo"]]) + note("D", 1, [["begin", "Ahh"]]) + note("E", 1, [["middle", "ohh"]]) + note("F", 1, [["end", "ooo"]]),
+        note("G", 2, [["begin", "Doh"]]) + note("A", 2, [["end", "ooo"]]),
+      ]),
+    );
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).lyrics).toBe("Oo Ahh ohh oo Doh oo");
+    // a word respelled by the user is sung as respelled, though the respelling isn't in the dictionary
+    const spelled = run(score([note("C", 2, [["begin", "frighte"]]) + note("D", 2, [["end", "ning"]])]), "--spell", "frightening=frightning");
+    expect(spelled.code).toBe(0);
+    expect(JSON.parse(spelled.out).lyrics).toBe("frightning");
+  });
+
   test("a word with more syllables than notes stops the tool, once per word whatever its case, until respelled", () => {
     const xml = score([note("C", 2, [["single", "Ba"]]) + note("D", 2, [["single", "ba"]])]);
     const bad = run(xml);
