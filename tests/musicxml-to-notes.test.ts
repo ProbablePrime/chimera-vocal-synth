@@ -7,8 +7,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const TOOL = new URL("../tools/musicxml-to-notes.ts", import.meta.url).pathname;
+const TOOL = fileURLToPath(new URL("../tools/musicxml-to-notes.ts", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "musicxml-"));
 
 /** a one-part score in 4/4, one beat per division, at 100 bpm */
@@ -55,6 +56,18 @@ describe("musicxml-to-notes", () => {
     expect(JSON.parse(r.out)).toMatchObject({ lyrics: "together we sing", notes: [[60, 1], [62, 1], [64, 1], [67, 1], [67, 4]] });
   });
 
+  test("typed hyphens split words, a dash alone holds, and a lost apostrophe (U+FFFD) is one", () => {
+    // as MuseScore 3.0.1 exported bohemian-rhapsody-choir-and-piano.mxl: every lyric "single"
+    const r = run(
+      score([
+        note("C", 1, [["single", "A -"]]) + note("D", 1, [["single", "ny"]]) + note("E", 1, [["single", "does -"]]) + note("F", 1, [["single", "n�t"]]),
+        note("G", 1, [["single", "see -"]]) + note("A", 1, [["single", "I�m"]]) + note("B", 1, [["single", "ooh"]]) + note("C", 1, [["single", " -"]]),
+      ]),
+    );
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).lyrics).toBe("Any doesn't see I'm ooh -");
+  });
+
   test("a word with more syllables than notes stops the tool, once per word whatever its case, until respelled", () => {
     const xml = score([note("C", 2, [["single", "Ba"]]) + note("D", 2, [["single", "ba"]])]);
     const bad = run(xml);
@@ -63,6 +76,23 @@ describe("musicxml-to-notes", () => {
     const good = run(xml, "--spell", "ba=bah");
     expect(good.code).toBe(0);
     expect(JSON.parse(good.out).lyrics).toBe("bah bah");
+  });
+
+  test("a later tempo is built into the note lengths, at the score's first tempo", () => {
+    // 100 bpm, then 50 bpm from measure 2: a beat there lasts two beats at 100
+    const r = run(score([note("C", 4, [["single", "one"]]), `<direction><sound tempo="50"/></direction>${note("D", 2, [["single", "two"]])}<note><rest/><duration>2</duration></note>`]));
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ bpm: 100, notes: [[60, 4], [62, 4], [0, 4]] });
+  });
+
+  test("two voices on the staff: the one with words is sung, its silences as rests", () => {
+    // voice 1 holds a wordless note; voice 2 waits a beat (no rest written), then sings
+    const v = (step: string, beats: number, voice: string, text?: string) =>
+      `<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${beats}</duration><voice>${voice}</voice>${text ? `<lyric number="1"><syllabic>single</syllabic><text>${text}</text></lyric>` : ""}</note>`;
+    const r = run(score([note("C", 4, [["single", "one"]]), v("E", 4, "1") + "<backup><duration>4</duration></backup><forward><duration>1</duration></forward>" + v("G", 1, "2", "bum") + v("A", 1, "2", "bum")]));
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ lyrics: "one bum bum", notes: [[60, 4], [0, 1], [67, 1], [69, 1], [0, 1]] });
+    expect(r.err).toContain("sang voice 2 of 2");
   });
 
   test("a D.S. jump is refused, not sung straight through", () => {

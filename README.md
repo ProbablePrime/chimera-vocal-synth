@@ -40,6 +40,7 @@ cargo run --release -p chimera-cli -- diagnose       # nasal leakage, formants, 
 cargo run --release -p chimera-cli -- compare csd    # against a real singer (docs/csd-comparison.md)
 bun tools/spectrogram.ts in.wav out.png
 bun tools/musicxml-to-notes.ts score.mxl P1 --out p1.json   # a score's part → `render notes` melody
+bun tools/musicxml-ify.ts score.mxl --output public/shows/song   # every sung part → a duet show
 ```
 
 ## Docs
