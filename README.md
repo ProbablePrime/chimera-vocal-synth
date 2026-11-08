@@ -39,6 +39,7 @@ cargo run --release -p chimera-cli -- render speech|text|song|notes|beatbox|crea
 cargo run --release -p chimera-cli -- diagnose       # nasal leakage, formants, bandwidths, pitch
 cargo run --release -p chimera-cli -- compare csd    # against a real singer (docs/csd-comparison.md)
 bun tools/spectrogram.ts in.wav out.png
+bun tools/musicxml-to-notes.ts score.mxl P1 --out p1.json   # a score's part → `render notes` melody
 ```
 
 ## Docs
